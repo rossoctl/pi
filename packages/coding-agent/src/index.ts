@@ -218,6 +218,7 @@ export {
 	type SessionMessageEntry,
 	type ThinkingLevelChangeEntry,
 } from "./core/session-manager.ts";
+export type { SessionStorageBackend } from "./core/session-storage-backend.ts";
 export {
 	type CompactionSettings,
 	type DefaultProjectTrust,
