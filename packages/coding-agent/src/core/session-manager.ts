@@ -26,6 +26,7 @@ import {
 	createCompactionSummaryMessage,
 	createCustomMessage,
 } from "./messages.ts";
+import type { SessionStorageBackend } from "./session-storage-backend.ts";
 
 export const CURRENT_SESSION_VERSION = 3;
 
@@ -766,6 +767,7 @@ export class SessionManager {
 	private labelsById: Map<string, string> = new Map();
 	private labelTimestampsById: Map<string, string> = new Map();
 	private leafId: string | null = null;
+	private backend?: SessionStorageBackend;
 
 	private constructor(
 		cwd: string,
@@ -773,10 +775,12 @@ export class SessionManager {
 		sessionFile: string | undefined,
 		persist: boolean,
 		newSessionOptions?: NewSessionOptions,
+		backend?: SessionStorageBackend,
 	) {
 		this.cwd = resolvePath(cwd);
 		this.sessionDir = normalizePath(sessionDir);
 		this.persist = persist;
+		this.backend = backend;
 		if (persist && this.sessionDir && !existsSync(this.sessionDir)) {
 			mkdirSync(this.sessionDir, { recursive: true });
 		}
@@ -821,6 +825,15 @@ export class SessionManager {
 		}
 	}
 
+	/** Populate this manager from a backend-sourced entry list (resume path). */
+	private loadFromEntries(sessionId: string, entries: FileEntry[]): void {
+		this.sessionId = sessionId;
+		this.fileEntries = entries;
+		this.persist = true;
+		this.flushed = true;
+		this._buildIndex(); // rebuilds byId, labels, and leafId (= last entry)
+	}
+
 	newSession(options?: NewSessionOptions): string | undefined {
 		if (options?.id !== undefined) {
 			assertValidSessionId(options.id);
@@ -841,7 +854,9 @@ export class SessionManager {
 		this.leafId = null;
 		this.flushed = false;
 
-		if (this.persist) {
+		if (this.persist && this.backend) {
+			void this.backend.append(this.sessionId, header);
+		} else if (this.persist) {
 			const fileTimestamp = timestamp.replace(/[:.]/g, "-");
 			this.sessionFile = join(this.getSessionDir(), `${fileTimestamp}_${this.sessionId}.jsonl`);
 		}
@@ -906,6 +921,10 @@ export class SessionManager {
 	}
 
 	_persist(entry: SessionEntry): void {
+		if (this.backend) {
+			if (this.persist) void this.backend.append(this.sessionId, entry);
+			return;
+		}
 		if (!this.persist || !this.sessionFile) return;
 
 		const hasAssistant = this.fileEntries.some((e) => e.type === "message" && e.message.role === "assistant");
@@ -1381,10 +1400,37 @@ export class SessionManager {
 	 * Create a new session.
 	 * @param cwd Working directory (stored in session header)
 	 * @param sessionDir Optional session directory. If omitted, uses default (~/.pi/agent/sessions/<encoded-cwd>/).
+	 * @param options Optional new session options (id, parentSession).
+	 * @param backend Optional storage backend. When provided, persistence is external — no session dir needed.
 	 */
-	static create(cwd: string, sessionDir?: string, options?: NewSessionOptions): SessionManager {
-		const dir = sessionDir ? normalizePath(sessionDir) : getDefaultSessionDir(cwd);
-		return new SessionManager(cwd, dir, undefined, true, options);
+	static create(
+		cwd: string,
+		sessionDir?: string,
+		options?: NewSessionOptions,
+		backend?: SessionStorageBackend,
+	): SessionManager {
+		// With a backend, persistence is external — no session dir needed.
+		const dir = backend ? "" : sessionDir ? normalizePath(sessionDir) : getDefaultSessionDir(cwd);
+		return new SessionManager(cwd, dir, undefined, true, options, backend);
+	}
+
+	/**
+	 * Resume a session from an injected storage backend (Redis), keyed by session id.
+	 * Constructed with persist=false so the constructor's newSession() does not append a
+	 * spurious header; loadFromEntries() then re-enables persistence after loading.
+	 */
+	static async openFromBackend(
+		sessionId: string,
+		backend: SessionStorageBackend,
+		cwd: string = process.cwd(),
+	): Promise<SessionManager> {
+		const entries = await backend.read(sessionId);
+		if (entries.length === 0) {
+			throw new Error(`Cannot resume: no session in backend for id ${sessionId}`);
+		}
+		const sm = new SessionManager(cwd, "", undefined, false, undefined, backend);
+		sm.loadFromEntries(sessionId, entries);
+		return sm;
 	}
 
 	/**
