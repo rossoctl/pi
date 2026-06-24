@@ -152,6 +152,14 @@ export type SessionEntry =
 /** Raw file entry (includes header) */
 export type FileEntry = SessionHeader | SessionEntry;
 
+/** Extracts a 1-based resume position from a checkpoint marker entry, or null if absent/invalid. */
+export function markerResumePosition(marker: FileEntry | null): number | null {
+	if (!marker || marker.type !== "custom") return null;
+	const data = (marker as CustomEntry).data as { resumeFromPosition?: unknown } | undefined;
+	const pos = data?.resumeFromPosition;
+	return typeof pos === "number" && Number.isFinite(pos) && pos >= 1 ? pos : null;
+}
+
 /** Tree node for getTree() - defensive copy of session structure */
 export interface SessionTreeNode {
 	entry: SessionEntry;
@@ -1427,6 +1435,30 @@ export class SessionManager {
 		const entries = await backend.read(sessionId);
 		if (entries.length === 0) {
 			throw new Error(`Cannot resume: no session in backend for id ${sessionId}`);
+		}
+		const sm = new SessionManager(cwd, "", undefined, false, undefined, backend);
+		sm.loadFromEntries(sessionId, entries);
+		return sm;
+	}
+
+	/**
+	 * Fast-start loader: reads only the latest-checkpoint-forward slice of the log and
+	 * reconstructs from it (O(tail)). Falls back to full openFromBackend when there is no
+	 * usable checkpoint marker. Reuses buildSessionContext, so cold context == warm context.
+	 */
+	static async openFromCheckpoint(
+		sessionId: string,
+		backend: SessionStorageBackend,
+		cwd: string = process.cwd(),
+	): Promise<SessionManager> {
+		const marker = await backend.latestCheckpoint(sessionId);
+		const resumeFrom = markerResumePosition(marker);
+		if (resumeFrom == null) {
+			return SessionManager.openFromBackend(sessionId, backend, cwd);
+		}
+		const entries = await backend.read(sessionId, resumeFrom);
+		if (entries.length === 0) {
+			return SessionManager.openFromBackend(sessionId, backend, cwd);
 		}
 		const sm = new SessionManager(cwd, "", undefined, false, undefined, backend);
 		sm.loadFromEntries(sessionId, entries);
