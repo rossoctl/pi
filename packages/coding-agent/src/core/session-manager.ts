@@ -1445,6 +1445,14 @@ export class SessionManager {
 	 * Fast-start loader: reads only the latest-checkpoint-forward slice of the log and
 	 * reconstructs from it (O(tail)). Falls back to full openFromBackend when there is no
 	 * usable checkpoint marker. Reuses buildSessionContext, so cold context == warm context.
+	 *
+	 * Caveat: the tail slice excludes pre-firstKeptEntryId entries. In particular, Pi appends
+	 * a `thinking_level_change` at session start (before any messages), so that entry is
+	 * dropped by a tail-load and `buildSessionContext().thinkingLevel` reconstructs to the
+	 * default ("off") on the first post-compaction resume. This self-heals on the next turn
+	 * (Pi re-appends the entry). Safe while thinking level is settings-governed and not changed
+	 * per session. `model` is unaffected — it is re-set by every assistant message, which are
+	 * always inside the kept tail.
 	 */
 	static async openFromCheckpoint(
 		sessionId: string,
