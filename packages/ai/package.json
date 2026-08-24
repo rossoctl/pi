@@ -62,7 +62,9 @@
 		"clean": "shx rm -rf dist",
 		"generate-models": "node scripts/generate-models.ts",
 		"generate-image-models": "node scripts/generate-image-models.ts",
-		"build": "npm run generate-models && npm run generate-image-models && tsgo -p tsconfig.build.json",
+		"generate": "npm run generate-models && npm run generate-image-models",
+		"build": "tsgo -p tsconfig.build.json",
+		"check:models-drift": "npm run generate && git diff --exit-code -- src/models.generated.ts src/image-models.generated.ts",
 		"test": "vitest --run",
 		"prepublishOnly": "npm run clean && npm run build"
 	},
